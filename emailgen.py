@@ -51,6 +51,7 @@ def gerar_email_teste_realista(
     empresa_remetente: Optional[str] = typer.Option(None, help="Nome da empresa remetente"),
     telefone_remetente: Optional[str] = typer.Option(None, help="Telefone para assinatura")
 ):
+    # Valores padrão para remetente e domínio caso não sejam declarados
     if not nome_remetente:
         nome_remetente = "Carlos Silva" if remetente_interno else "Atendimento"
 
@@ -59,6 +60,7 @@ def gerar_email_teste_realista(
 
     email_remetente = f"{nome_remetente.lower().replace(' ', '.')}@{dominio_falso}"
 
+    # Controla o foco da ação do email
     if tipo_acao == "link":
         acao = f"Acesse o link: {link_falso if link_falso else f'https://{dominio_falso}/atualizacao'}"
     elif tipo_acao == "anexo":
@@ -138,6 +140,7 @@ E-mail: [E-mail]
 """
         
     try:
+        # O 'input=prompt' envia o prompt gerado para a entrada padrão.
         cmd = ["ollama", "run", "llama3"]
         resultado = subprocess.run(
             cmd,
@@ -174,11 +177,14 @@ def processar_pasta(
         with open(caminho, "r", encoding="utf-8") as f:
             dados = json.load(f)
 
+        # Formata o nome padrão do arquivo de saída
         nome_base = f"{dados.get('nome_colaborador', 'email')}_{dados.get('cenario', 'cenario')}".replace(" ", "_").replace("/", "_")
         caminho_saida = os.path.join(saida, f"{nome_base}.txt")
         caminho_meta = os.path.join(saida, f"{nome_base}.meta.json")
 
+        # Passar argumentos de forma dinâmica a partir do JSON (CLIRUNNER)
         runner = CliRunner()
+        # Cria uma lista a partir do JSON 
         args = ["gerar-email-teste-realista"] + sum([[
             f"--{k.replace('_', '-')}", str(v)
         ] if not isinstance(v, bool) else ([f"--{k.replace('_', '-')}"] if v else []) 
@@ -186,12 +192,14 @@ def processar_pasta(
 
         result = runner.invoke(app, args, catch_exceptions=False)
 
+        # Corrige um errinho recorrente que estava acontecendo do tipo "realize a tarefa até 24h" para "realize a tarefa em até 24h", deixando o email mais realista
         conteudo_original = result.stdout
         conteudo_corrigido = re.sub(r"(?<!em ) até (\d{1,3} ?(h|minutos|dias))", r" em até \1", conteudo_original)
 
         with open(caminho_saida, "w", encoding="utf-8") as saida_txt:
             saida_txt.write(conteudo_corrigido)
 
+        # Cria um arquivo de metadados (.meta.json) que armazena informações
         with open(caminho_meta, "w", encoding="utf-8") as meta_json:
             json.dump({
                 "assunto": dados["assunto"],
@@ -228,6 +236,7 @@ def launch_template(
             with open(caminho_meta, "r", encoding="utf-8") as f_meta:
                 meta = json.load(f_meta)
 
+            # O payload é o corpo da requisição JSON enviado para a API do GoPhish.
             payload = {
                 "name": meta.get("titulo", base.title()),
                 "subject": meta.get("assunto", "Assunto padrão"),
@@ -244,7 +253,7 @@ def launch_template(
                 f"{gophish_url}/api/templates/",
                 headers=headers,
                 json=payload,
-                verify=False
+                verify=False # 'verify=False' desabilita a verificação do certificado SSL p/ testes no localhost
             )
 
             if response.status_code == 201:
@@ -264,6 +273,8 @@ def create_campaigns(
     landing_page_name: str = typer.Option("Default", help="Nome da Landing Page a ser usada no GoPhish."),
     campaign_url: str = typer.Option("http://phishing.example.com", help="URL base para rastreamento da campanha")
 ):
+    # robustez para encontrar o template correto no GoPhish
+    # primeiro mapeamos todos os templates, para não perder algum
     def normalizar(texto):
         if not texto: return ""
         texto = texto.lower().strip()
@@ -296,7 +307,8 @@ def create_campaigns(
 
     for meta_json_nome in arquivos_meta_json:
         caminho_meta_json = os.path.join(saida, meta_json_nome)
-        
+
+        # cada usuário é único, assim o envio do template também mira em um só alvo
         try:
             with open(caminho_meta_json, "r", encoding="utf-8") as f_meta:
                 metadados = json.load(f_meta)
@@ -320,6 +332,7 @@ def create_campaigns(
 
             agora_utc_formatado = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
 
+            # payload final para criar e lançar a campanha.
             payload_campanha = {
                 "name": titulo_campanha,
                 "template": {"name": nome_real_template},
@@ -330,7 +343,8 @@ def create_campaigns(
                 "launch_date": agora_utc_formatado,
                 "send_by_date": None,
             }
-            
+
+            # 'echo' muito útil para depuração - mostra o JSON exato
             typer.echo(f"\nEnviando JSON para campanha '{titulo_campanha}':")
             typer.echo(json.dumps(payload_campanha, indent=2, ensure_ascii=False))
 
@@ -354,6 +368,7 @@ def create_campaigns(
             typer.echo(f"Erro inesperado ao processar campanha para {meta_json_nome}: {e}")
 
 @app.command()
+# executa tudo de uma vez, tem ainda um sleep pra deixar o gophish se preparar para continuar a execução
 def full_run(
     entrada: str = typer.Argument("entrada", help="Diretório de entrada com os arquivos JSON."),
     saida: str = typer.Option("saida", help="Diretório de saída para e-mails e metadados."),
