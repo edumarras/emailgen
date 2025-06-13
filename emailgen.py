@@ -11,29 +11,41 @@ from typing import Optional
 from datetime import datetime, timezone
 from typer.testing import CliRunner
 
+# app é nossa aplicação de linha de comando, criada com o Typer.
 app = typer.Typer()
 
 @app.command()
 def serve():
+    """Inicia o servidor Ollama em segundo plano."""
     def run_ollama_serve():
+        # Usamos Popen para que o servidor Ollama rode sem travar este script.
         subprocess.Popen(["ollama", "serve"], shell=True)
 
+    # Colocamos o servidor em uma thread separada para que ele continue rodando em background.
     thread = threading.Thread(target=run_ollama_serve)
     thread.start()
+    
+    # É uma boa prática esperar um pouco para garantir que o servidor esteja pronto.
+    typer.echo("Aguardando 5 segundos para o servidor Ollama iniciar...")
     time.sleep(5)
     typer.echo("Servidor Ollama iniciado.")
 
 @app.command()
 def pull_model(model_name: str = "llama3"):
+    """Verifica se um modelo já existe e o baixa se necessário."""
     try:
+        # Primeiro, listamos os modelos já instalados para não baixar de novo sem necessidade.
         result = subprocess.run(["ollama", "list"], text=True, capture_output=True, check=True, shell=True)
+        
         if model_name.lower() in result.stdout.lower():
-            typer.echo(f"Modelo {model_name} já está instalado.")
+            typer.echo(f"Modelo '{model_name}' já está instalado.")
         else:
-            typer.echo(f"Modelo {model_name} não encontrado. Baixando...")
+            # Se não estiver na lista, iniciamos o download.
+            typer.echo(f"Modelo '{model_name}' não encontrado. Baixando...")
             subprocess.run(["ollama", "pull", model_name], check=True, shell=True)
-            typer.echo(f"Modelo {model_name} baixado com sucesso.")
+            typer.echo(f"Modelo '{model_name}' baixado com sucesso.")
     except subprocess.CalledProcessError as e:
+        # Captura erros caso o comando 'ollama' falhe.
         typer.echo(f"Erro ao verificar ou puxar modelo: {e}")
 
 @app.command()
@@ -51,7 +63,8 @@ def gerar_email_teste_realista(
     empresa_remetente: Optional[str] = typer.Option(None, help="Nome da empresa remetente"),
     telefone_remetente: Optional[str] = typer.Option(None, help="Telefone para assinatura")
 ):
-    # Valores padrão para remetente e domínio caso não sejam declarados
+    """Gera o corpo de um e-mail de phishing usando o modelo de linguagem."""
+    # Se alguns dados não forem fornecidos, usamos valores padrão para preencher.
     if not nome_remetente:
         nome_remetente = "Carlos Silva" if remetente_interno else "Atendimento"
 
@@ -60,7 +73,7 @@ def gerar_email_teste_realista(
 
     email_remetente = f"{nome_remetente.lower().replace(' ', '.')}@{dominio_falso}"
 
-    # Controla o foco da ação do email
+    # Monta a frase de "chamada para ação" dependendo do tipo de teste.
     if tipo_acao == "link":
         acao = f"Acesse o link: {link_falso if link_falso else f'https://{dominio_falso}/atualizacao'}"
     elif tipo_acao == "anexo":
@@ -71,6 +84,8 @@ def gerar_email_teste_realista(
     if not telefone_remetente:
         telefone_remetente = "(11) 91234-5678"
         
+    # Existem dois modelos de prompt: um para e-mails internos e outro para externos.
+    # Isso ajuda a IA a ajustar o tom da mensagem.
     if remetente_interno:
         prompt = f"""
 Escreva um e-mail interno corporativo em português brasileiro, com base nas informações abaixo.
@@ -140,7 +155,8 @@ E-mail: [E-mail]
 """
         
     try:
-        # O 'input=prompt' envia o prompt gerado para a entrada padrão.
+        # Enviamos o prompt para o modelo Llama3 e capturamos a resposta.
+        # O encoding='utf-8' é importante para não ter problemas com acentos.
         cmd = ["ollama", "run", "llama3"]
         resultado = subprocess.run(
             cmd,
@@ -160,6 +176,7 @@ def processar_pasta(
     entrada: str = typer.Argument(..., help="Diretório contendo arquivos JSON"),
     saida: str = typer.Argument(..., help="Diretório para salvar os e-mails gerados")
 ):
+    """Lê arquivos JSON de uma pasta e gera um e-mail para cada um."""
     if not os.path.isdir(entrada):
         typer.echo(f"Pasta de entrada '{entrada}' não existe.")
         raise typer.Exit(code=1)
@@ -177,29 +194,31 @@ def processar_pasta(
         with open(caminho, "r", encoding="utf-8") as f:
             dados = json.load(f)
 
-        # Formata o nome padrão do arquivo de saída
         nome_base = f"{dados.get('nome_colaborador', 'email')}_{dados.get('cenario', 'cenario')}".replace(" ", "_").replace("/", "_")
         caminho_saida = os.path.join(saida, f"{nome_base}.txt")
         caminho_meta = os.path.join(saida, f"{nome_base}.meta.json")
 
-        # Passar argumentos de forma dinâmica a partir do JSON (CLIRUNNER)
+        # Em vez de duplicar a lógica, usamos o CliRunner para chamar nosso próprio comando
+        # 'gerar-email-teste-realista', passando os dados do JSON como argumentos.
+        # Isso mantém o código mais limpo e fácil de manter.
         runner = CliRunner()
-        # Cria uma lista a partir do JSON 
         args = ["gerar-email-teste-realista"] + sum([[
             f"--{k.replace('_', '-')}", str(v)
-        ] if not isinstance(v, bool) else ([f"--{k.replace('_', '-')}"] if v else []) 
+        ] if not isinstance(v, bool) else ([f"--{k.replace('_', '-')}"] if v else [])  
         for k, v in dados.items() if k not in ("assunto", "email_destinatario")], [])
 
         result = runner.invoke(app, args, catch_exceptions=False)
 
-        # Corrige um errinho recorrente que estava acontecendo do tipo "realize a tarefa até 24h" para "realize a tarefa em até 24h", deixando o email mais realista
+        # A IA às vezes gera uma gramática um pouco estranha. Esta linha corrige uma
+        # pequena inconsistência para o texto soar mais natural.
         conteudo_original = result.stdout
         conteudo_corrigido = re.sub(r"(?<!em ) até (\d{1,3} ?(h|minutos|dias))", r" em até \1", conteudo_original)
 
         with open(caminho_saida, "w", encoding="utf-8") as saida_txt:
             saida_txt.write(conteudo_corrigido)
 
-        # Cria um arquivo de metadados (.meta.json) que armazena informações
+        # Guardamos informações importantes (como assunto e destinatário) em um arquivo de metadados.
+        # Isso facilita o trabalho na hora de criar as campanhas no GoPhish.
         with open(caminho_meta, "w", encoding="utf-8") as meta_json:
             json.dump({
                 "assunto": dados["assunto"],
@@ -215,6 +234,7 @@ def launch_template(
     api_key: str = typer.Option(..., help="Chave da API do GoPhish"),
     gophish_url: str = typer.Option("https://localhost:3333", help="URL da API do GoPhish")
 ):
+    """Envia os e-mails gerados para o GoPhish como templates."""
     if not os.path.isdir(saida):
         typer.echo(f"Pasta '{saida}' não encontrada.")
         raise typer.Exit(code=1)
@@ -236,7 +256,7 @@ def launch_template(
             with open(caminho_meta, "r", encoding="utf-8") as f_meta:
                 meta = json.load(f_meta)
 
-            # O payload é o corpo da requisição JSON enviado para a API do GoPhish.
+            # O 'payload' é o corpo da requisição, formatado como a API do GoPhish espera.
             payload = {
                 "name": meta.get("titulo", base.title()),
                 "subject": meta.get("assunto", "Assunto padrão"),
@@ -249,13 +269,16 @@ def launch_template(
                 "Authorization": f"Bearer {api_key}"
             }
 
+            # 'verify=False' desabilita a verificação de certificado SSL.
+            # É útil para testes em localhost, mas deve ser ativado em produção.
             response = requests.post(
                 f"{gophish_url}/api/templates/",
                 headers=headers,
                 json=payload,
-                verify=False # 'verify=False' desabilita a verificação do certificado SSL p/ testes no localhost
+                verify=False
             )
 
+            # O status 201 (Created) confirma que o template foi criado com sucesso.
             if response.status_code == 201:
                 typer.echo(f"Enviado: {payload['name']}")
             else:
@@ -273,8 +296,9 @@ def create_campaigns(
     landing_page_name: str = typer.Option("Default", help="Nome da Landing Page a ser usada no GoPhish."),
     campaign_url: str = typer.Option("http://phishing.example.com", help="URL base para rastreamento da campanha")
 ):
-    # robustez para encontrar o template correto no GoPhish
-    # primeiro mapeamos todos os templates, para não perder algum
+    """Cria e lança as campanhas no GoPhish."""
+    # Função auxiliar para "limpar" os nomes, removendo acentos e espaços.
+    # Isso ajuda a evitar erros ao comparar nomes de templates.
     def normalizar(texto):
         if not texto: return ""
         texto = texto.lower().strip()
@@ -289,6 +313,8 @@ def create_campaigns(
     ssl_verify = not ("localhost" in gophish_url or "127.0.0.1" in gophish_url)
 
     try:
+        # Primeiro, buscamos todos os templates que já existem no GoPhish
+        # para garantir que vamos usar o nome correto na hora de criar a campanha.
         templates_resp = requests.get(f"{gophish_url.rstrip('/')}/api/templates/", headers=headers_api, verify=ssl_verify)
         templates_resp.raise_for_status()
         gophish_templates = templates_resp.json()
@@ -308,7 +334,6 @@ def create_campaigns(
     for meta_json_nome in arquivos_meta_json:
         caminho_meta_json = os.path.join(saida, meta_json_nome)
 
-        # cada usuário é único, assim o envio do template também mira em um só alvo
         try:
             with open(caminho_meta_json, "r", encoding="utf-8") as f_meta:
                 metadados = json.load(f_meta)
@@ -325,14 +350,17 @@ def create_campaigns(
                 typer.echo(f"Template '{titulo_campanha}' não encontrado no GoPhish. Pulando.")
                 continue
             
+            # Para cada alvo, criamos um grupo específico no GoPhish.
+            # Isso nos permite lançar uma campanha individual para cada e-mail gerado.
             nome_grupo_gophish = f"Grupo_{titulo_campanha.replace(' ', '_')}"
             
             payload_novo_grupo = {"name": nome_grupo_gophish, "targets": [{"email": email_destinatario}]}
             requests.post(f"{gophish_url.rstrip('/')}/api/groups/", headers=headers_api, json=payload_novo_grupo, verify=ssl_verify)
 
+            # A API do GoPhish exige a data de lançamento em formato UTC (com 'Z' no final).
             agora_utc_formatado = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
 
-            # payload final para criar e lançar a campanha.
+            # Este é o payload final para criar e lançar a campanha.
             payload_campanha = {
                 "name": titulo_campanha,
                 "template": {"name": nome_real_template},
@@ -344,7 +372,7 @@ def create_campaigns(
                 "send_by_date": None,
             }
 
-            # 'echo' muito útil para depuração - mostra o JSON exato
+            # Imprimir o JSON que será enviado é uma ótima forma de depurar problemas.
             typer.echo(f"\nEnviando JSON para campanha '{titulo_campanha}':")
             typer.echo(json.dumps(payload_campanha, indent=2, ensure_ascii=False))
 
@@ -368,7 +396,6 @@ def create_campaigns(
             typer.echo(f"Erro inesperado ao processar campanha para {meta_json_nome}: {e}")
 
 @app.command()
-# executa tudo de uma vez, tem ainda um sleep pra deixar o gophish se preparar para continuar a execução
 def full_run(
     entrada: str = typer.Argument("entrada", help="Diretório de entrada com os arquivos JSON."),
     saida: str = typer.Option("saida", help="Diretório de saída para e-mails e metadados."),
@@ -378,6 +405,7 @@ def full_run(
     smtp_profile_name: str = typer.Option("Teste", help="Nome do Perfil de Envio (SMTP) no GoPhish."),
     campaign_url: str = typer.Option("http://phishing.example.com", help="URL de rastreamento para campanhas."),
 ):
+    """Executa o fluxo completo: gerar e-mails, enviar templates e criar campanhas."""
     typer.echo("Iniciando execução completa do fluxo...")
 
     typer.echo("\n[ETAPA 1/3] Processando pasta de cenários para gerar os e-mails...")
@@ -385,7 +413,7 @@ def full_run(
         processar_pasta(entrada=entrada, saida=saida)
         typer.echo("Etapa 1 concluída com sucesso.")
     except typer.Exit as e:
-        typer.echo(f"A Etapa 1 falhou e o script foi encerrado.")
+        typer.echo("A Etapa 1 falhou e o script foi encerrado.")
         raise e
     except Exception as e:
         typer.echo(f"Erro inesperado na Etapa 1 (processar_pasta): {e}")
@@ -403,6 +431,8 @@ def full_run(
         typer.echo(f"Erro inesperado na Etapa 2 (launch_template): {e}")
         raise typer.Exit(code=1)
         
+    # É bom dar um pequeno tempo para o GoPhish processar os novos templates
+    # antes de tentarmos usá-los para criar uma campanha.
     typer.echo("Aguardando 3 segundos para o GoPhish registrar os templates...")
     time.sleep(3)
 
